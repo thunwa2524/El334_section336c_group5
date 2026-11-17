@@ -2,16 +2,11 @@
 
 #define PIN_OUT_CFG (PORT_PCR_MUX(1) | PORT_PCR_DSE_MASK | PORT_PCR_PE_MASK | PORT_PCR_PS_MASK)
 
-/* ---------- Program modes ---------- */
-#define MODE_RESET   0      /* show 0000, LED chase 1-2-3-4  */
-#define MODE_IDLE    1      /* wait for S2                   */
-#define MODE_RUN     2      /* measuring                     */
-#define MODE_FREEZE  3      /* value frozen                  */
+#define MODE_RESET   0
+#define MODE_IDLE    1
+#define MODE_RUN     2
+#define MODE_FREEZE  3
 
-/* ---------- Calibration ---------- */
-#define TEMP_OFFSET_C  5.0f /* compensate self-heating of MCU chip */
-
-/* ---------- 7-Segment (segment: active LOW, digit: active HIGH) ---------- */
 const unsigned char SEG_MAP[10] = {0xC0, 0xF9, 0xA4, 0xB0, 0x99, 0x92, 0x82, 0xF8, 0x80, 0x90};
 const unsigned char DIG_MAP[4]  = {0x01, 0x02, 0x04, 0x08};
 
@@ -20,20 +15,16 @@ const unsigned char DIG_MAP[4]  = {0x01, 0x02, 0x04, 0x08};
 #define SEG_E      0x86
 #define SEG_r      0xAF
 
-/* ---------- LED on shield: D1=PTD1, D2=PTD3, D3=PTD2, D4=PTD0 (active LOW) ---------- */
 const int LED_BIT[4] = {1, 3, 2, 0};
 
-/* ---------- Global variables ---------- */
-unsigned char disp[4] = {0xC0, 0xC0, 0xC0, 0xC0};   /* segment code of each digit  */
-int temp10 = 0;                                     /* temperature x10 (273=27.3C) */
+unsigned char disp[4] = {0xC0, 0xC0, 0xC0, 0xC0};
+int temp10 = 0;
 
-/* Interrupt Handler (Lab 6)  */
 volatile int press1 = 0;
 volatile int press2 = 0;
 volatile int press3 = 0;
 
-
-void PORTB_IRQHandler(void); /* Interrupt Handler(Lab 6) */
+void PORTB_IRQHandler(void); 
 void short_delay(void);
 void led_show(int mask);
 void buzzer_on(void);
@@ -43,53 +34,48 @@ void display_7seg(int digit_pos, int seg);
 void show_zero(void);
 void show_error(void);
 void show_temp(int t);
-void ADC0_init(void);
-int read_ADC0(void);
-float convertToTemp(int adc_val);
+void delayMs(int n);
+void delay_us(int us);
 void Init_Shield(void);
-void delayMs(int n) ;
 void UART0_init(void);
-/* =====================================================
- * 1. SysTick (Lab 4) : Interrupt 1 ms
- * ===================================================== */
+
+void DHT11_init(void);
+int read_DHT11(void);
+
 void delayMs(int n) { 
     int i; 
     SysTick->LOAD = 20480 - 1; 
-    /* Enable the timer and choose sysclk as the clock source */ 
     SysTick->CTRL = SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_ENABLE_Msk;      
      
     for (i = 0; i < n; i++) 
-        /* wait until the COUNT flag is set */ 
         while((SysTick->CTRL & SysTick_CTRL_COUNTFLAG_Msk) == 0) {  
         } 
      
-    SysTick->CTRL = 0;      /* Stop the timer (Enable = 0) */ 
+    SysTick->CTRL = 0; 
 }
-/* =====================================================
- * 2. PORTB Interrupt ( Lab 6) :  SW1, SW2, SW3
- * ===================================================== */
+
+void delay_us(int us) {
+    volatile int i;
+    for (i = 0; i < (us * 3); i++) {
+        __NOP();
+    }
+}
+
 void PORTB_IRQHandler(void) {
-    /*  Interrupt  A1 (PTB3)  */
     if (PORTB->ISFR & (1 << 3)) {
         press1 = 1;
         PORTB->ISFR = (1 << 3); 
     }
-    /*  Interrupt  A2 (PTB10)  */
     if (PORTB->ISFR & (1 << 10)) {
         press2 = 1;
         PORTB->ISFR = (1 << 10);
     }
-    /*  Interrupt  A3 (PTB11)  */
     if (PORTB->ISFR & (1 << 11)) {
         press3 = 1;
         PORTB->ISFR = (1 << 11);
     }
 }
 
-
-/* =====================================================
- * Delay & Hardware Controls
- * ===================================================== */
 void short_delay(void) {
     volatile int d;
     for (d = 0; d < 50; d++) __NOP();
@@ -98,8 +84,8 @@ void short_delay(void) {
 void led_show(int mask) {
     int i;
     for (i = 0; i < 4; i++) {
-        if (mask & (1 << i)) PTD->PCOR = (1 << LED_BIT[i]);   /* 0 = on  */
-        else                 PTD->PSOR = (1 << LED_BIT[i]);   /* 1 = off */
+        if (mask & (1 << i)) PTD->PCOR = (1 << LED_BIT[i]);
+        else                 PTD->PSOR = (1 << LED_BIT[i]);
     }
 }
 
@@ -112,9 +98,6 @@ void buzzer_off(void) {
     PTA->PDDR &= ~(1 << 1);      
 }
 
-/* =====================================================
- * 7-Segment (Shift Register)
- * ===================================================== */
 void shiftOut(int data) {
     int i;
     for (i = 0; i < 8; i++) {
@@ -178,104 +161,115 @@ void show_temp(int t) {
     disp[3] = SEG_C;
 }
 
+void DHT11_init(void) {
+    PORTC->PCR[10] = PORT_PCR_MUX(1);
+    PTC->PDDR |= (1 << 10);
+    PTC->PSOR = (1 << 10);
+}
 
-/* =====================================================
- * 3. ADC0 
- * ===================================================== */
-void ADC0_init(void) {
-    SIM->SCGC6 |= SIM_SCGC6_ADC0_MASK;         /* Step 4: clock to ADC0 */
-    ADC0->SC2 &= ~ADC_SC2_ADTRG_MASK;          /* Step 5: software trigger */
+int read_DHT11(void) {
+    int byte_idx, bit_idx;
+    unsigned char data[5] = {0, 0, 0, 0, 0};
+    int time_out;
+
+    PTC->PDDR |= (1 << 10);
     
-    /* Step 6: clock div by 4, long sample time, single ended 12 bit, bus clock */
-    ADC0->CFG1 = ADC_CFG1_ADIV(2) | ADC_CFG1_ADLSMP_MASK | ADC_CFG1_MODE(1) | ADC_CFG1_ADICLK(0);
-}
+    PTC->PCOR = (1 << 10);
+    delayMs(18);
+    
+    PTC->PSOR = (1 << 10);
+    delay_us(30);
 
-int read_ADC0(void) {
-    ADC0->SC1[0] = 0x1A; /* Step 7: start conversion on channel 26 (Internal Temp) */
-    while(!(ADC0->SC1[0] & ADC_SC1_COCO_MASK)) { 
-        /* Step 8: wait for conversion complete */
+    PTC->PDDR &= ~(1 << 10);
+    
+    time_out = 0; 
+    while ((PTC->PDIR & (1 << 10)) && (time_out < 100)) { delay_us(1); time_out++; } 
+    
+    time_out = 0; 
+    while (!(PTC->PDIR & (1 << 10)) && (time_out < 100)) { delay_us(1); time_out++; } 
+    
+    time_out = 0; 
+    while ((PTC->PDIR & (1 << 10)) && (time_out < 100)) { delay_us(1); time_out++; } 
+
+    for (byte_idx = 0; byte_idx < 5; byte_idx++) {
+        for (bit_idx = 0; bit_idx < 8; bit_idx++) {
+            
+            time_out = 0;
+            while (!(PTC->PDIR & (1 << 10)) && (time_out < 100)) { delay_us(1); time_out++; }
+            
+            time_out = 0;
+            while ((PTC->PDIR & (1 << 10)) && (time_out < 100)) { delay_us(1); time_out++; }
+            
+            data[byte_idx] = data[byte_idx] << 1;
+            
+            if (time_out > 40) { 
+                data[byte_idx] = data[byte_idx] | 1;
+            }
+        }
     }
-    return ADC0->R[0];   /* Step 9: read conversion result */
+
+    if (data[4] == ((data[0] + data[1] + data[2] + data[3]) & 0xFF)) {
+        return (data[2] * 10) + data[3]; 
+    }
+    
+    return -1; 
 }
 
-float convertToTemp(int adc_val) {
-    float v_temp = ((float)adc_val / 4096.0f) * 3.3f;
-    float temp_c = 25.0f - ((v_temp - 0.716f) / 0.00162f);
-    return temp_c - TEMP_OFFSET_C;
-}
-
-
-/* =====================================================
- * Init Shield
- * ===================================================== */
 void Init_Shield(void) {
     SIM->SCGC5 |= SIM_SCGC5_PORTA_MASK | SIM_SCGC5_PORTB_MASK | SIM_SCGC5_PORTC_MASK | SIM_SCGC5_PORTD_MASK;
 
-    /* 1. Buzzer (PTA1) */
     PORTA->PCR[1] = PORT_PCR_MUX(1);
     PTA->PDDR &= ~(1 << 1);
 
-    /* 2. Switch A1(PTB3), A2(PTB10), A3(PTB11) */
-		__disable_irq();     /* PORT_PCR_IRQC(0xA)  Falling-Edge Interrupt */
+    __disable_irq();     
     PORTB->PCR[3]  = PORT_PCR_MUX(1) | PORT_PCR_PE_MASK | PORT_PCR_PS_MASK | PORT_PCR_IRQC(0xA);
     PORTB->PCR[10] = PORT_PCR_MUX(1) | PORT_PCR_PE_MASK | PORT_PCR_PS_MASK | PORT_PCR_IRQC(0xA);
     PORTB->PCR[11] = PORT_PCR_MUX(1) | PORT_PCR_PE_MASK | PORT_PCR_PS_MASK | PORT_PCR_IRQC(0xA);
     PTB->PDDR &= ~((1 << 3) | (1 << 10) | (1 << 11));
     
-    NVIC_EnableIRQ(PORTB_IRQn); /*  Interrupt port B */
-		__enable_irq();
-    /* 3. LED on shield */
+    NVIC_EnableIRQ(PORTB_IRQn); 
+    __enable_irq();
+
     PORTD->PCR[0] = PIN_OUT_CFG; PORTD->PCR[1] = PIN_OUT_CFG;
     PORTD->PCR[2] = PIN_OUT_CFG; PORTD->PCR[3] = PIN_OUT_CFG;
     PTD->PDDR |= (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3);
     PTD->PSOR = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3);
 
-    /* 4. 7-Segment */
     PORTB->PCR[23] = PIN_OUT_CFG; PTB->PDDR |= (1 << 23); PTB->PSOR = (1 << 23);
     PORTC->PCR[3]  = PIN_OUT_CFG; PTC->PDDR |= (1 << 3);  PTC->PCOR = (1 << 3);
     PORTC->PCR[12] = PIN_OUT_CFG; PTC->PDDR |= (1 << 12); PTC->PCOR = (1 << 12);
 }
+
 void UART0_init(void) {
-    SIM->SCGC4 |= SIM_SCGC4_UART0_MASK;    /*  Clock  UART0 */
-    SIM->SCGC5 |= SIM_SCGC5_PORTB_MASK;    /*  Clock  PORTB */
+    SIM->SCGC4 |= SIM_SCGC4_UART0_MASK;    
+    SIM->SCGC5 |= SIM_SCGC5_PORTB_MASK;    
     
-    /* PTB16  PTB17  UART0 (ALT3) */
-    PORTB->PCR[16] = PORT_PCR_MUX(3);      /* UART0_RX */
-    PORTB->PCR[17] = PORT_PCR_MUX(3);      /* UART0_TX */
+    PORTB->PCR[16] = PORT_PCR_MUX(3);      
+    PORTB->PCR[17] = PORT_PCR_MUX(3);      
     
-    /*  Transmitter and Receiver  */
     UART0->C2 &= ~(UART_C2_TE_MASK | UART_C2_RE_MASK);
     
-    /* 
-     * ????? Baud rate = 9600 
-     * System Clock = 20.48 MHz ( SysTick 20480 = 1ms)
-     * SBR = 20480000 / (16 * 9600) = 133 
-     */
     UART0->BDH = 0;
     UART0->BDL = 133;
-    UART0->C4 = 0x0F;                      /* Oversampling ratio = 16 */
+    UART0->C4 = 0x0F;                      
     UART0->C1 = 0;
     
-    /* Transmitter */
     UART0->C2 |= UART_C2_TE_MASK;
 }
-int transmit_count = 0;     
-int transmit_timer = 0;      
 
-/* =====================================================
- * Main
- * ===================================================== */
+int transmit_count = 0;     
+int transmit_timer = 0;     
+
 int main(void) {
     int mode;
     int pos = 0;                         
     int led_step = 0;
-    int adc_val;
-    float temp_c;
+    int new_temp;
 
     int led_timer = 0, conv_timer = 0, buzzer_timer = 0;     
 
     Init_Shield();
-    ADC0_init();
+    DHT11_init();
     UART0_init();
 
     mode = MODE_RESET;
@@ -321,7 +315,6 @@ int main(void) {
        if (press3) {
             press3 = 0;
             if (mode == MODE_RUN) {
-                
                 transmit_count = 100;    
                 transmit_timer = 0;
                 
@@ -365,7 +358,6 @@ int main(void) {
             }
         }
 
-       
         if (mode == MODE_RESET) {
             if (led_timer == 0) {        
                 led_step++;
@@ -381,15 +373,15 @@ int main(void) {
 
         if (mode == MODE_RUN) {
             if (conv_timer == 0) {
-                adc_val = read_ADC0();           
-                temp_c  = convertToTemp(adc_val);
-                temp10  = (int)(temp_c * 10.0f );
+                new_temp = read_DHT11();
+                if (new_temp != -1) {
+                    temp10 = new_temp;
+                }
                 show_temp(temp10);
-                conv_timer = 300;                
+                conv_timer = 300;
             }
         }
 
-        
         delayMs(1);
     }
 }
