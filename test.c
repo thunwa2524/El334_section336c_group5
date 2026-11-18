@@ -1,4 +1,5 @@
 #include "MK64F12.h"
+#define TEMP_OFFSET (-20)
 
 #define PIN_OUT_CFG (PORT_PCR_MUX(1) | PORT_PCR_DSE_MASK | PORT_PCR_PE_MASK | PORT_PCR_PS_MASK)
 
@@ -14,6 +15,10 @@ const unsigned char DIG_MAP[4]  = {0x01, 0x02, 0x04, 0x08};
 #define SEG_C      0xC6
 #define SEG_E      0x86
 #define SEG_r      0xAF
+
+/* ---- FIX: DHT11 helper defines ---- */
+#define DHT_PIN      (1 << 10)
+#define DHT_TIMEOUT  3000      /* max polling count per wait (~1 ms+) */
 
 const int LED_BIT[4] = {1, 3, 2, 0};
 
@@ -161,58 +166,69 @@ void show_temp(int t) {
     disp[3] = SEG_C;
 }
 
+/* ---- FIX: enable internal pull-up on DATA pin ---- */
 void DHT11_init(void) {
-    PORTC->PCR[10] = PORT_PCR_MUX(1);
-    PTC->PDDR |= (1 << 10);
-    PTC->PSOR = (1 << 10);
+    PORTC->PCR[10] = PORT_PCR_MUX(1) | PORT_PCR_PE_MASK | PORT_PCR_PS_MASK;
+    PTC->PDDR |= DHT_PIN;
+    PTC->PSOR = DHT_PIN;
 }
 
-int read_DHT11(void) {
-    int byte_idx, bit_idx;
-    unsigned char data[5] = {0, 0, 0, 0, 0};
-    int time_out;
+/* ---- FIX: count how long the pin stays at 'level'; -1 on timeout ---- */
+static int dht_width(int level) {
+    int n = 0;
+    while (((PTC->PDIR & DHT_PIN) != 0) == level) {
+        if (++n >= DHT_TIMEOUT) return -1;
+    }
+    return n;
+}
 
-    PTC->PDDR |= (1 << 10);
+/* ---- FIX: bit = 1 when HIGH width > LOW width of the same bit
+        (no dependency on exact microsecond calibration) ---- */
+int read_DHT11(void) {
+    int i, hi, lo;
+    unsigned char data[5] = {0, 0, 0, 0, 0};
+
+    PTC->PDDR |= DHT_PIN;
     
-    PTC->PCOR = (1 << 10);
+    PTC->PCOR = DHT_PIN;
     delayMs(18);
     
-    PTC->PSOR = (1 << 10);
+    PTC->PSOR = DHT_PIN;
     delay_us(30);
 
-    PTC->PDDR &= ~(1 << 10);
-    
-    time_out = 0; 
-    while ((PTC->PDIR & (1 << 10)) && (time_out < 100)) { delay_us(1); time_out++; } 
-    
-    time_out = 0; 
-    while (!(PTC->PDIR & (1 << 10)) && (time_out < 100)) { delay_us(1); time_out++; } 
-    
-    time_out = 0; 
-    while ((PTC->PDIR & (1 << 10)) && (time_out < 100)) { delay_us(1); time_out++; } 
+    PTC->PDDR &= ~DHT_PIN;
 
-    for (byte_idx = 0; byte_idx < 5; byte_idx++) {
-        for (bit_idx = 0; bit_idx < 8; bit_idx++) {
-            
-            time_out = 0;
-            while (!(PTC->PDIR & (1 << 10)) && (time_out < 100)) { delay_us(1); time_out++; }
-            
-            time_out = 0;
-            while ((PTC->PDIR & (1 << 10)) && (time_out < 100)) { delay_us(1); time_out++; }
-            
-            data[byte_idx] = data[byte_idx] << 1;
-            
-            if (time_out > 40) { 
-                data[byte_idx] = data[byte_idx] | 1;
-            }
+    __disable_irq();
+
+    if (dht_width(1) < 0) goto fail;     /* wait sensor pull low   */
+    if (dht_width(0) < 0) goto fail;     /* response low  ~80 us   */
+    if (dht_width(1) < 0) goto fail;     /* response high ~80 us   */
+
+    for (i = 0; i < 40; i++) {
+        lo = dht_width(0);               /* ~50 us                 */
+        hi = dht_width(1);               /* 27 us = 0, 70 us = 1   */
+        if (lo < 0 || hi < 0) goto fail;
+
+        data[i / 8] = data[i / 8] << 1;
+        if (hi > lo) {
+            data[i / 8] = data[i / 8] | 1;
         }
     }
 
-    if (data[4] == ((data[0] + data[1] + data[2] + data[3]) & 0xFF)) {
+    __enable_irq();
+
+    if (data[4] == ((data[0] + data[1] + data[2] + data[3]) & 0xFF)
+        && (data[0] | data[2]) != 0) {   /* reject all-zero data   */
         return (data[2] * 10) + data[3]; 
     }
     
     return -1; 
+
+fail:
+    __enable_irq();
+    PTC->PDDR |= DHT_PIN;
+    PTC->PSOR = DHT_PIN;
+    return -1;
 }
 
 void Init_Shield(void) {
@@ -375,10 +391,10 @@ int main(void) {
             if (conv_timer == 0) {
                 new_temp = read_DHT11();
                 if (new_temp != -1) {
-                    temp10 = new_temp;
+                    temp10 = new_temp + TEMP_OFFSET;
                 }
                 show_temp(temp10);
-                conv_timer = 300;
+                conv_timer = 2000;
             }
         }
 
